@@ -1,115 +1,112 @@
 package routes
 
-// Package `routes` contains HTTP route handlers for the URL shortener service.
-
 import (
-	"net/http" // Provides HTTP status codes and server utilities
-	"os"       // Access environment variables
-	"strconv"  // Convert strings to integers and vice versa
-	"time"     // Time utilities for durations
+	"encoding/json"
+	"net/http"
+	"os"
+	"strconv"
+	"time"
 
-	"github.com/asaskevich/govalidator"       // URL validation library
-	"github.com/gin-gonic/gin"                // Gin web framework
-	"github.com/go-redis/redis/v8"            // Redis client for Go
-	"github.com/google/uuid"                  // Generate UUIDs
-	"github.com/suraj/url-shortener/database" // Custom package for Redis connections
-	"github.com/suraj/url-shortener/helpers"  // Helper functions for URL manipulation
+	"github.com/asaskevich/govalidator" // URL validation
+	"github.com/go-redis/redis/v8"      // Redis client
+	"github.com/google/uuid"            // UUID for unique short IDs
+	"github.com/suraj/url-shortener/database"
+	"github.com/suraj/url-shortener/helpers"
 )
 
-// ---------------- Request & Response Structs ----------------
+// ---------------- Request & Response Models ----------------
+
+// Incoming request body structure
 type request struct {
-	URL         string        `json:"url"`    // URL to shorten
-	CustomShort string        `json:"short"`  // Optional custom short URL
-	Expiry      time.Duration `json:"expiry"` // Expiry time in hours
+	URL         string        `json:"url"`
+	CustomShort string        `json:"short"`
+	Expiry      time.Duration `json:"expiry"`
 }
 
+// Outgoing response structure
 type response struct {
-	URL             string        `json:"url"`              // Original URL
-	CustomShort     string        `json:"short"`            // Short URL returned to user
-	Expiry          time.Duration `json:"expiry"`           // Expiry in hours
-	XRateRemaining  int           `json:"rate_limit"`       // Remaining API quota
-	XRateLimitReset time.Duration `json:"rate_limit_reset"` // Time until quota resets
+	URL             string        `json:"url"`
+	CustomShort     string        `json:"short"`
+	Expiry          time.Duration `json:"expiry"`
+	XRateRemaining  int           `json:"rate_limit"`
+	XRateLimitReset time.Duration `json:"rate_limit_reset"`
 }
 
 // ---------------- Route Handler ----------------
-func ShortenURL(c *gin.Context) {
-	var body request
-	// `var body request` → create a variable to hold the incoming JSON request
 
-	if err := c.ShouldBindJSON(&body); err != nil {
-		// Bind incoming JSON to `body` struct
-		// If JSON parsing fails:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot parse JSON"})
+// ShortenURL handles POST /api/v1/ requests for shortening URLs
+func ShortenURL(w http.ResponseWriter, r *http.Request) {
+	var body request
+
+	// Decode incoming JSON into request struct
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"cannot parse JSON"}`, http.StatusBadRequest)
 		return
 	}
 
 	// ---------------- Rate Limiting ----------------
-	r2 := database.CreateClient(1)
-	// Connect to Redis DB 1 for API quota tracking
+	r2 := database.CreateClient(1) // Redis DB 1 for quota
 	defer r2.Close()
 
-	val, err := r2.Get(database.Ctx, c.ClientIP()).Result()
-	// Get the remaining quota for the client's IP address
+	clientIP := r.RemoteAddr
+	val, err := r2.Get(database.Ctx, clientIP).Result()
 
 	if err == redis.Nil {
-		// If IP is new (no quota key exists)
-		_ = r2.Set(database.Ctx, c.ClientIP(), os.Getenv("API_QUOTA"), 30*60*time.Second).Err()
-		// Initialize quota with `API_QUOTA` from env for 30 minutes
+		// First request from this IP → set quota
+		_ = r2.Set(database.Ctx, clientIP, os.Getenv("API_QUOTA"), 30*60*time.Second).Err()
 	} else {
-		valInt, _ := strconv.Atoi(val) // Convert string quota to integer
+		valInt, _ := strconv.Atoi(val)
 		if valInt <= 0 {
-			// Quota exhausted
-			limit, _ := r2.TTL(database.Ctx, c.ClientIP()).Result() // Get remaining TTL
-			c.JSON(http.StatusServiceUnavailable, gin.H{
+			limit, _ := r2.TTL(database.Ctx, clientIP).Result()
+			resp := map[string]interface{}{
 				"error":            "Rate Limit Exceeded",
 				"rate_limit_reset": limit / time.Nanosecond / time.Minute,
-			})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(resp)
 			return
 		}
 	}
 
 	// ---------------- URL Validation ----------------
 	if !govalidator.IsURL(body.URL) {
-		// Validate the URL format
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid URL"})
+		http.Error(w, `{"error":"Invalid URL"}`, http.StatusBadRequest)
 		return
 	}
 
 	if !helpers.RemoveDomainError(body.URL) {
-		// Prevent shortening own domain URLs
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Service not available"})
+		http.Error(w, `{"error":"Service not available"}`, http.StatusServiceUnavailable)
 		return
 	}
 
 	body.URL = helpers.EnforceHTTP(body.URL)
-	// Ensure URL starts with "http://"
 
 	// ---------------- Generate Short ID ----------------
 	var id string
 	if body.CustomShort == "" {
-		id = uuid.New().String()[:6] // Generate 6-char random ID
+		id = uuid.New().String()[:6]
 	} else {
-		id = body.CustomShort // Use provided custom short
+		id = body.CustomShort
 	}
 
 	// ---------------- Store in Redis DB 0 ----------------
-	r := database.CreateClient(0)
-	defer r.Close()
+	rdb := database.CreateClient(0)
+	defer rdb.Close()
 
-	val, _ = r.Get(database.Ctx, id).Result()
+	val, _ = rdb.Get(database.Ctx, id).Result()
 	if val != "" {
-		// Prevent overwriting existing short URL
-		c.JSON(http.StatusForbidden, gin.H{"error": "URL custom short is already in use"})
+		http.Error(w, `{"error":"URL custom short is already in use"}`, http.StatusForbidden)
 		return
 	}
 
 	if body.Expiry == 0 {
-		body.Expiry = 24 // Default expiry 24 hours
+		body.Expiry = 24
 	}
 
-	err = r.Set(database.Ctx, id, body.URL, body.Expiry*3600*time.Second).Err()
+	err = rdb.Set(database.Ctx, id, body.URL, body.Expiry*3600*time.Second).Err()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to connect to server"})
+		http.Error(w, `{"error":"Unable to connect to server"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -118,18 +115,21 @@ func ShortenURL(c *gin.Context) {
 		URL:             body.URL,
 		CustomShort:     os.Getenv("DOMAIN") + "/" + id,
 		Expiry:          body.Expiry,
-		XRateRemaining:  10, // Default placeholder, will update below
-		XRateLimitReset: 30, // Default placeholder, will update below
+		XRateRemaining:  10,
+		XRateLimitReset: 30,
 	}
 
-	r2.Decr(database.Ctx, c.ClientIP()) // Reduce quota by 1
+	// Reduce quota by 1
+	r2.Decr(database.Ctx, clientIP)
 
-	val, _ = r2.Get(database.Ctx, c.ClientIP()).Result()
-	resp.XRateRemaining, _ = strconv.Atoi(val) // Update remaining quota
+	val, _ = r2.Get(database.Ctx, clientIP).Result()
+	resp.XRateRemaining, _ = strconv.Atoi(val)
 
-	ttl, _ := r2.TTL(database.Ctx, c.ClientIP()).Result()
-	resp.XRateLimitReset = ttl / time.Nanosecond / time.Minute // Update reset time
+	ttl, _ := r2.TTL(database.Ctx, clientIP).Result()
+	resp.XRateLimitReset = ttl / time.Nanosecond / time.Minute
 
 	// ---------------- Send JSON Response ----------------
-	c.JSON(http.StatusOK, resp)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
 }
