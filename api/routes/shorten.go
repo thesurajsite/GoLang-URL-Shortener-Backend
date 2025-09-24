@@ -33,6 +33,7 @@ type response struct {
 func ShortenURL(w http.ResponseWriter, r *http.Request) {
 	var body request
 
+	// Decode the Request body
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -48,7 +49,8 @@ func ShortenURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r2 := database.CreateClient(1) // Redis DB 1 for rate limiting
+	// Create a db client for Rate Limiting with number
+	r2 := database.CreateClient(1)
 	defer r2.Close()
 
 	clientIP := r.RemoteAddr
@@ -94,7 +96,7 @@ func ShortenURL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Checks if the URL has same domain as shotrening service
-	if !helpers.RemoveDomainError(body.URL) {
+	if helpers.IsSameDomain(body.URL) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(response{
@@ -109,7 +111,7 @@ func ShortenURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body.URL = helpers.EnforceHTTP(body.URL) // https:// to the url
+	body.URL = helpers.EnforceHTTP(body.URL) // adding prefix https:// to the url
 
 	// generate short id or url
 	var id string
@@ -125,7 +127,7 @@ func ShortenURL(w http.ResponseWriter, r *http.Request) {
 
 	for i := 0; i < 100; i++ {
 		_, err = rdb.Get(database.Ctx, id).Result()
-		if err == redis.Nil { // err found in searching means, its not present, means its unique
+		if err == redis.Nil { // err found in searching means, so unique id found
 			break
 		} else if err != nil {
 			// some other Redis error
@@ -143,6 +145,7 @@ func ShortenURL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// no error means, that id was already present
 		id = uuid.New().String()[:6]
 
 		if i == 99 {
@@ -165,7 +168,7 @@ func ShortenURL(w http.ResponseWriter, r *http.Request) {
 	if body.Expiry == 0 { // In frontend 0 means empty, so set default expiry to 24 at backend
 		body.Expiry = 24
 	} else if body.Expiry == -1 { // In frontend -1 means never expire, so set 0 for never expire
-		body.Expiry = 0
+		body.Expiry = 0 // In Redis, 0 means never expire
 	}
 
 	err = rdb.Set(database.Ctx, id, body.URL, body.Expiry*3600*time.Second).Err()
@@ -202,8 +205,8 @@ func ShortenURL(w http.ResponseWriter, r *http.Request) {
 	val, _ = r2.Get(database.Ctx, clientIP).Result()
 	resp.XRateRemaining, _ = strconv.Atoi(val)
 
-	ttl, _ := r2.TTL(database.Ctx, clientIP).Result()
-	resp.XRateLimitReset = ttl / time.Nanosecond / time.Minute
+	ttl, _ := r2.TTL(database.Ctx, clientIP).Result()          // TTL : Total time limit
+	resp.XRateLimitReset = ttl / time.Nanosecond / time.Minute // convert time to minutes
 
 	// Send Response
 	w.Header().Set("Content-Type", "application/json")
