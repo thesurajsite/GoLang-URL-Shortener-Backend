@@ -6,7 +6,7 @@ import (
 
 func Setup(r *mux.Router) {
 
-	r.HandleFunc("/{url}", ResolveURL).Methods("GET")
 	r.HandleFunc("/api/v1/", ShortenURL).Methods("POST")
+	r.HandleFunc("/{id}", ResolveURL).Methods("GET")
 
 }
