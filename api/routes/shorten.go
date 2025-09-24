@@ -198,8 +198,8 @@ func ShortenURL(w http.ResponseWriter, r *http.Request) {
 		XRateLimitReset: 30,
 	}
 
-	// Reduce quota by 1
-	r2.Decr(database.Ctx, clientIP)
+	r2.Decr(database.Ctx, clientIP)    // Reduce quota by 1
+	r2.Incr(database.Ctx, "generated") // Tracks number of url generated
 
 	// update XRateRemaining & XRateLimitReset in response
 	val, _ = r2.Get(database.Ctx, clientIP).Result()
@@ -212,4 +212,5 @@ func ShortenURL(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
+
 }
