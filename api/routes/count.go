@@ -2,6 +2,7 @@ package routes
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"github.com/go-redis/redis/v8"
@@ -27,6 +28,7 @@ func UrlCount(w http.ResponseWriter, r *http.Request) {
 		return
 
 	} else if err != nil {
+		log.Println("Redis error:", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{
