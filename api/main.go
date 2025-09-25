@@ -18,5 +18,11 @@ func main() {
 
 	routes.Setup(r)
 
-	log.Fatal(http.ListenAndServe(":"+os.Getenv("APP_PORT"), r))
+	port := os.Getenv("PORT") // Render's port
+	if port == "" {
+		port = os.Getenv("APP_PORT") // Run locally
+	}
+
+	log.Fatal(http.ListenAndServe(":"+port, r))
+
 }

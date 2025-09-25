@@ -50,7 +50,7 @@ func ShortenURL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// creates a db client for Rate Limiting, Stores user Quote, default=10, renews after 30 minutes
-	r2 := database.CreateClient(1)
+	r2 := database.CreateClient(0)
 	defer r2.Close()
 
 	clientIP := r.RemoteAddr

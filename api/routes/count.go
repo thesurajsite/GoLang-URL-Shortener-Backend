@@ -12,7 +12,7 @@ import (
 // Returns total number of URL generated
 func UrlCount(w http.ResponseWriter, r *http.Request) {
 
-	rd := database.CreateClient(1)
+	rd := database.CreateClient(0)
 	defer rd.Close()
 
 	count, err := rd.Get(database.Ctx, "generated").Result()
